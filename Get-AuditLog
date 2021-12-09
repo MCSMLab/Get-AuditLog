@@ -1,0 +1,98 @@
+<#
+.Name
+Get-AuditLog
+
+.SYNOPSIS
+This script pulls audit log data from Exchange and ExO mailbox
+
+.DESCRIPTION
+Requires PowerShell connection to Exchange Online
+
+.NOTES
+1.0 - 
+
+Get-AuditLog.ps1
+v1.0
+12/07/2021
+By Nathan O'Bryan
+nathan@mcsmlab.com
+
+.PARAMETER Mailbox
+Specifices mailbox for search
+
+.PARAMETER StartDate
+Specifices start date for search
+
+.PARMETER EndDate
+Specifices end date for search
+
+.PARMETER Subject
+Specifices message subject for search
+
+.PARMETER ReturnObject
+Changes output to screen not csv file
+
+.EXAMPLE
+Get-AuditLog -Mailbox nathan@mcsmlab.com -StartDate 12/01/2021 -EndDate 12/07/2021
+
+.LINK
+https://www.mcsmlab.com/about
+https://github.com/MCSMLab/Get-AuditLog.git
+#>
+
+
+
+param (
+[PARAMETER (Mandatory=$TRUE, ValueFromPipeline=$FALSE)][string]$Mailbox,
+[PARAMETER (Mandatory=$TRUE, ValueFromPipeline=$FALSE)][string]$StartDate,
+[PARAMETER (Mandatory=$TRUE, ValueFromPipeline=$FALSE)][string]$EndDate,
+[PARAMETER (Mandatory=$FALSE,ValueFromPipeline=$FALSE)][string]$Subject,
+[PARAMETER (Mandatory=$FALSE,ValueFromPipeline=$FALSE)][switch]$ReturnObject
+)
+
+$Date = Get-Date -Format MMdd_HHmm
+$OutFileName = "AuditLogResults$Date.csv"
+$LogParameters = @('Operation', 'OperationResult', 'LastAccessed', 'FolderPathName','DestFolderPathName', 'LogonUserDisplayName',  'ClientInfoString', 'ClientIPAddress', 'ClientProcessName', 'ClientVersion', 'LogonType')
+
+Write-Host
+Write-Host
+Write-Host -ForegroundColor Green "Searching Mailbox Audit Logs for $Mailbox..."
+
+$Throttled = Search-MailboxAuditLog -StartDate $StartDate -EndDate $EndDate -Identity $Mailbox -Operations MailItemsAccessed -ShowDetails | Where-Object {$_.OperationProperties -like "*IsThrottled:True*"}
+If ($Throttled -ne $null) 
+    {
+    Write-Host -ForegroundColor Red 'MailItemsAccessed has been throttled for this mailbox during period searched. Assume breach'
+    }
+
+$Sync = Search-MailboxAuditLog -StartDate $StartDate -EndDate $EndDate -Identity $Mailbox -Operations MailItemsAccessed -ShowDetails | Where-Object {$_.OperationProperties -like "*MailAccessType:Sync*"}
+If ($Sync -ne $null) 
+    {
+    Write-Host -ForegroundColor Yellow 'Mailbox has been downloaded offline during periord searched. Audit results will not include access of offline content.'
+    }
+
+$SearchResults = @(Search-MailboxAuditLog $Mailbox -StartDate $StartDate -EndDate $EndDate -LogonTypes Owner, Admin, Delegate -ShowDetails)
+$SR0 = $SearchResults.Count
+Write-Host -ForegroundColor White "$SR0 Total entries Found"
+ 
+$SearchResults = @($SearchResults | Select ($LogParameters + @{Name='Subject';e={if (($_.SourceItems.Count -eq 0) -or ($_.SourceItems.Count -eq $null)){$_.ItemSubject} else {($_.SourceItems[0].SourceItemSubject).TrimStart(' ')}}},
+    @{Name='CrossMailboxOp';e={if (@('SendAs','Create','Update') -contains $_.Operation) {'N/A'} else {$_.CrossMailboxOperation}}}))
+$LogParameters = @('Subject') + $LogParameters + @('CrossMailboxOp')
+    
+If ($Subject -ne '' -and $Subject -ne $null)
+    {
+    Write-Host -ForegroundColor Green "Searching for Subject: $Subject"
+    $SearchResults = @($SearchResults | Where-Object {$_.Subject -match $Subject -or $_.Subject -eq $Subject})
+    $SR2 =$SearchResults.Count
+    Write-Host -ForegroundColor White "Filtered to $SR2 Entries"
+    }
+
+$SearchResults = @($SearchResults | Select $LogParameters)
+
+If ($ReturnObject) {Return $SearchResults}
+
+ElseIf ($SearchResults.Count -gt 0)
+    {
+    Write-Host
+    Write-Host -ForegroundColor Green "Posting results to file: $OutfileName"
+    $SearchResults | Export-Csv $OutFileName -notypeinformation -encoding UTF8
+    }
